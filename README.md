@@ -222,8 +222,8 @@ curl http://localhost:8081/receipts -H "Content-type:application/json" -X POST -
 # 배송 요청
 curl http://localhost:8081/receipts/1 -H "Content-type:application/json" -X PATCH -d "{\"stat\":\"DELIVERYREQUESTED\"}"
 # 각 어그리게이트 확인 (접수, 배송 시작)
-http http://localhost:8088/receipts/1
-http http://localhost:8088/deliveries/1
+curl http://localhost:8081/receipts
+curl http://localhost:8085/deliveries
 ```
 ## 폴리글랏 퍼시스턴스
 마이크로서비스의 폴리그랏 퍼시스턴스의 예로 데이터의 빈번한 입출력을 사용하는 부분은 Display(View)의 저장소는 Mongo DB(NO SQL)를 사용하고 그 외의 업무 도메인인 접수(Receipt), 수리(Repair), 결재(Payment), 배송(Delivery)는 Maria DB(RDB)를 사용하였다.
@@ -296,20 +296,41 @@ public interface DeliveryService {
         deliveryStarted.publishAfterCommit();
     }
 ```
-- 동기식 호출에서는 호출 시간에 따른 타임 커플링이 발생하며, 배송 시스템이 장애가 나면 배송요청을 못받는다는 것을 확인:
+- 배송 시스템이 장애가 나면 배송요청을 못받는다는 것을 확인:
 ```
 # 배송 (delivery) 서비스를 잠시 내려놓음 (ctrl+c)
-#배송 요청
-curl http://localhost:8081/receipts/4 -H "Content-type:application/json" -X PATCH -d "{\"stat\":\"DELIVERYREQUESTED\"}"   #Fail
+
+# 배송 요청
+curl http://localhost:8081/receipts/4 -H "Content-type:application/json" -X PATCH -d "{\"stat\":\"DELIVERYREQUESTED\"}"   
+
+# Fail
+{"timestamp":"2020-11-06T03:57:57.489+0000","status":500,"error":"Internal Server Error","message":"Could not commit JPA transaction; nested exception is javax.persistence.RollbackException: Error while committing the transaction","path":"/receipts/4"}
+
 #delivery 재기동
-cd delivery
-mvn spring-boot:run
-#주문처리
-curl http://localhost:8081/receipts/4 -H "Content-type:application/json" -X PATCH -d "{\"stat\":\"DELIVERYREQUESTED\"}"   #Success
+
+# 배송 요청
+curl http://localhost:8081/receipts/4 -H "Content-type:application/json" -X PATCH -d "{\"stat\":\"DELIVERYREQUESTED\"}"   
+
+# Success
+{
+  "vehiNo" : "1234",
+  "stat" : "DELIVERYREQUESTED",
+  "reapirAmt" : null,
+  "payAmt" : null,
+  "_links" : {
+    "self" : {
+      "href" : "http://localhost:8081/receipts/4"
+    },
+    "receipt" : {
+      "href" : "http://localhost:8081/receipts/4"
+    }
+  }
+}
+
 ```
 ## 비동기식 호출 / 장애격리 / 최종 (Eventual) 일관성 테스트
-수리 프로세스에 문제가 있더라도 접수는 계속 받을 수 있도록 비동기식 호출하여 처리 한다. (kafka)
-추후에 수리 프로세스가 복구 완료되면 접수에서 정상적으로 수리 접수 되었다고 이벤트를 수신한다. (Polish Hanler 처리 및 kafka로 접수에 배송 요청 상태 변경 회신)
+- 수리 프로세스에 문제가 있더라도 접수는 계속 받을 수 있도록 비동기식 호출하여 처리 한다. (kafka)
+- 추후에 수리 프로세스가 복구 완료되면 접수에서 정상적으로 수리 접수 되었다고 이벤트를 수신한다. (Polish Hanler 처리 및 kafka로 접수에 배송 요청 상태 변경 회신)
 ```
 <receipt.java>
 @PostPersist
@@ -384,7 +405,6 @@ http GET http://localhost:8088/repairs      # 수리 정보 생성
 
 # 운영
 
-
 ## 동기식 호출 / 서킷 브레이킹 / 장애격리
 * 서킷 브레이킹 프레임워크의 선택: Istio Destination rule
 MSA 의 각 서비스들의 에러가 전파되는 것을 막기 위해서 특정 서비스에서 에러가 발생할 경우 해당 서비스로의 연결을 차단하도록 구성하였습니다.
@@ -424,11 +444,11 @@ spec:
 
 - 결제서비스에 대한 replica 를 동적으로 늘려주도록 HPA 를 설정한다. 설정은 CPU 사용량이 90프로를 넘어서면 replica 를 10개까지 늘려준다:
 ```
-kubectl autoscale deploy delivery --min=1 --max=10 --cpu-percent=90
+kubectl autoscale deployment delivery --cpu-percent=20 --min=1 --max=10 -n automechanic
 ```
 - CB 에서 했던 방식대로 워크로드를 2분 동안 걸어준다.
 ```
-siege -c100 -t120S -r10 'http://40.82.137.107:8080/deliveries GET
+siege -c100 -t120S -r10 'http://40.82.137.107:8080/deliveries'
 ```
 - 오토스케일이 어떻게 되고 있는지 모니터링을 걸어둔다:
 ```
@@ -437,10 +457,81 @@ kubectl get deploy delivery -w
 - 어느정도 시간이 흐른 후 스케일 아웃이 벌어지는 것을 확인할 수 있다:
 ```
 NAME       READY   UP-TO-DATE   AVAILABLE   AGE
-delivery   1/1     1            1           45h
-delivery   1/2     1            1           45h
-delivery   1/2     1            1           45h
-delivery   1/2     1            1           45h
-delivery   1/2     2            1           45h
+delivery   1/2     2            1           124m
+delivery   0/2     2            0           124m
+delivery   0/4     2            0           125m
+delivery   0/4     2            0           125m
+delivery   0/4     2            0           125m
+delivery   0/4     4            0           125m
+delivery   0/5     4            0           125m
+delivery   0/5     4            0           125m
+delivery   0/5     4            0           125m
+delivery   0/5     5            0           125m
+delivery   1/5     5            1           126m
+delivery   2/5     5            2           126m
+delivery   3/5     5            3           128m
+delivery   4/5     5            4           128m
+delivery   5/5     5            5           128m
+delivery   5/1     5            5           132m
+delivery   5/1     5            5           132m
+delivery   1/1     1            1           132m
+:
+```
+- siege 의 로그를 보아도 전체적인 성공률이 높아진 것을 확인 할 수 있다:
+```
+Lifting the server siege...
+Transactions:                   5005 hits
+Availability:                  99.94 %
+Elapsed time:                 119.41 secs
+Data transferred:               1.73 MB
+Response time:                  2.35 secs
+Transaction rate:              41.91 trans/sec
+Throughput:                     0.01 MB/sec
+Concurrency:                   98.61
+Successful transactions:        5005
+Failed transactions:               3
+Longest transaction:           11.49
+Shortest transaction:           0.09
+:
+```
+
+### Liveness
+- Liveness 설정:
+```
+livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - echo Hello Kubernetes! > /tmp/healthy && cat /tmp/healthy
+          failureThreshold: 3
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+```
+- Liveness 체크:
+```
+livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - cat /tmp/healthy
+          failureThreshold: 3
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+```
+- 어느정도 시간이 흐른 후 RESTART를 확인할 수 있다:
+```
+admin12@Azure:~$ kubectl get pod -n automechanic
+NAME                        READY   STATUS    RESTARTS   AGE
+delivery-66dff9dcdc-69hf7   0/1     Running   1          55s
+delivery-6998747d55-dv27m   1/1     Running   0          5m31s
+display-65cdbf74f-666bx     1/1     Running   0          95m
+gateway-6b4969594b-clzjx    1/1     Running   0          19m
+payment-67fc4b587c-m5vfg    1/1     Running   0          95m
+receipt-66f74454bc-9j6cw    1/1     Running   0          95m
+repair-6bd7c876b4-wbg9t     1/1     Running   0          95m
 :
 ```
