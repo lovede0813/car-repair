@@ -221,9 +221,9 @@ public interface DeliveryRepository extends PagingAndSortingRepository<Delivery,
 curl http://localhost:8081/receipts -H "Content-type:application/json" -X POST -d "{\"vehiNo\":\"0101\", \"stat\":\"REPAIRREQUEST\"}"
 # 배송 요청
 curl http://localhost:8081/receipts/1 -H "Content-type:application/json" -X PATCH -d "{\"stat\":\"DELIVERYREQUESTED\"}"
-# 각 어그리게이트 확인 (접수, 배송 시작)
+# 접수 상태 확인
 curl http://localhost:8081/receipts
-curl http://localhost:8085/deliveries
+
 ```
 ## 폴리글랏 퍼시스턴스
 마이크로서비스의 폴리그랏 퍼시스턴스의 예로 데이터의 빈번한 입출력을 사용하는 부분은 Display(View)의 저장소는 Mongo DB(NO SQL)를 사용하고 그 외의 업무 도메인인 접수(Receipt), 수리(Repair), 결재(Payment), 배송(Delivery)는 Maria DB(RDB)를 사용하였다.
@@ -245,6 +245,7 @@ spring:
     username: ${delivery.db.name}
     password: ${delivery.db.password}
     driverClassName: org.mariadb.jdbc.Driver
+    
 application.xml (display service)
 spring:
   profiles: default
@@ -260,7 +261,7 @@ spring:
         format_sql: true
 ```
 ## 동기식 호출 과 Fallback 처리
-분석단계에서의 조건 중 하나로 결제(payment)->배송(delivery) 간의 호출은 동기식 일관성을 유지하는 트랜잭션으로 처리하기로 하였다. 호출 프로토콜은 이미 앞서 Rest Repository 에 의해 노출되어있는 REST 서비스를 FeignClient 를 이용하여 호출하도록 한다.
+분석단계에서의 조건 중 하나로 (receipt)->배송(delivery) 간의 호출은 동기식 일관성을 유지하는 트랜잭션으로 처리하기로 하였다. 호출 프로토콜은 이미 앞서 Rest Repository 에 의해 노출되어있는 REST 서비스를 FeignClient 를 이용하여 호출하도록 한다.
 - 배송서비스를 호출하기 위하여 Stub과 (FeignClient) 를 이용하여 Service 대행 인터페이스 (Proxy) 를 구현
 ```
 # (delivery) DeliveryService.java
@@ -329,30 +330,32 @@ curl http://localhost:8081/receipts/4 -H "Content-type:application/json" -X PATC
 
 ```
 ## 비동기식 호출 / 장애격리 / 최종 (Eventual) 일관성 테스트
-- 수리 프로세스에 문제가 있더라도 접수는 계속 받을 수 있도록 비동기식 호출하여 처리 한다. (kafka)
-- 추후에 수리 프로세스가 복구 완료되면 접수에서 정상적으로 수리 접수 되었다고 이벤트를 수신한다. (Polish Hanler 처리 및 kafka로 접수에 배송 요청 상태 변경 회신)
+- 배송 프로세스에 문제가 있더라도 접수는 계속 받을 수 있도록 비동기식 호출하여 처리 한다. (kafka)
+- 추후에 배송 프로세스가 복구 완료되면 접수에서 정상적으로 배송 시작 되었다고 이벤트를 수신한다. (Polish Hanler 처리 및 kafka로 접수에 배송 요청 상태 변경 회신)
 ```
 <receipt.java>
-@PostPersist
-public void onPostPersist() throws Exception {
-    System.out.println("###Reservaton.java - onPrePersist###");
-    try {
-        // 수리 요청
-        if(this.stat.equals("REQUESTREPAIR")) {
-            Received received = new Received();
-            BeanUtils.copyProperties(this, received);
-            received.setReceiptId(this.getId());
-            received.publishAfterCommit();
-        }else{
-            //Exception exception = new Exception();
-            //throw exception; //예외 발생
+@PostUpdate
+    public void onPostUpdate() throws Exception {
+        if (this.getStat().equals("DELIVERYREQUESTED")) {
+            try {
+                DeliveryRequested deliveryRequested = new DeliveryRequested();
+                BeanUtils.copyProperties(this, deliveryRequested);
+                deliveryRequested.publish(); // 먼저 수행 되어야 함.
+                automechanicsmall.external.Delivery delivery = new automechanicsmall.external.Delivery();
+                delivery.setStat("DELIVERYREQUESTED");
+                delivery.setReceiptId(this.getId());
+                delivery.setVehiNo(this.getVehiNo());
+                System.out.println("#############"+this.getId()+"##############");
+                System.out.println("#############"+this.getVehiNo()+"##############");
+                ReceiptApplication.applicationContext.getBean(automechanicsmall.external.DeliveryService.class).deliveryStart(delivery);
+            }catch(Exception e) {
+                throw new Exception("요청할 수 없는 상태 입니다.");
+                //return;
+            }finally {
+
+            }
         }
-    }catch(Exception e) {
-        throw new Exception("요청할 수 없는 상태 입니다.");
-        //return;
-    }finally {
     }
-}
 <Repair - PolicyHandler>
 @Service
 public class PolicyHandler{
@@ -386,59 +389,21 @@ public void onPostPersist(){
     }
 }
 ```
- 시스템은 접수/결제와 완전히 분리되어있으며, 이벤트 수신에 따라 처리되기 때문에, 수리시스템이 유지보수로 인해 잠시 내려간 상태라도 주문을 받는데 문제가 없다:
+ 시스템은 접수/결제와 완전히 분리되어있으며, 이벤트 수신에 따라 처리되기 때문에, 수리시스템이 유지보수로 인해 잠시 내려간 상태라도 접수를 받는데 문제가 없다:
 ```
-# 수리 서비스 (store) 를 잠시 내려놓음 (ctrl+c)
+# 배송 서비스 (store) 를 잠시 내려놓음 (ctrl+c)
 #처리
-http POST http://localhost:8088/receipts vehiNo=1234 stat=REQUESTREPAIR   #Success
-http POST http://localhost:8088/receipts vehiNo=4567 stat=REQUESTREPAIR   #Success
+http POST http://localhost:8088/receipts vehiNo=1234 stat=DELIVERYREQUESTED   #Success
 #주문상태 확인
-http GET http://localhost:8088/receipts     # 접수 완료로 변경되지 않음
-http GET http://localhost:8088/repairs      # 수리 정보 없음
-#수리 서비스 기동
-cd repair
-mvn spring-boot:run
-#수리상태 확인
-http GET http://localhost:8088/receipts     # 접수 완료로 변경
-http GET http://localhost:8088/repairs      # 수리 정보 생성
+http GET http://localhost:8088/receipts     # 배송 시작으로 변경되지 않음
+#배송 서비스 기동
+# 배송 시작 확인
+http GET http://localhost:8088/receipts     # 배송 시작으로 변경
 ```
 
 # 운영
 
-## 동기식 호출 / 서킷 브레이킹 / 장애격리
-* 서킷 브레이킹 프레임워크의 선택: Istio Destination rule
-MSA 의 각 서비스들의 에러가 전파되는 것을 막기 위해서 특정 서비스에서 에러가 발생할 경우 해당 서비스로의 연결을 차단하도록 구성하였습니다.
-- Destination rule 를 설정:  5xx Error 가 5번 연속적으로 발생 시 해당 서비스로의 연결을 15분 동안 끊는다.
-```
-# kubectl -n automechanic get destinationrule
-NAME         HOST      AGE
-display-dr   display   18h
-payment-dr   payment   19h
-receipt-dr   receipt   19h
-repair-dr    repair    19h
-```
-```
-# payment-dr.yml
-apiVersion: networking.istio.io/v1beta1
-kind: DestinationRule
-metadata:
-  name: payment-dr
-  namespace: automechanic
-spec:
-  host: payment
-  trafficPolicy:
-    outlierDetection:
-      baseEjectionTime: 15m
-      consecutive5xxErrors: 5
-      interval: 5m
-      maxEjectionPercent: 100
-```
-- 운영시스템은 죽지 않고 지속적으로 CB 에 의하여 적절히 회로가 열림과 닫힘이 벌어지면서 자원을 보호하고 있음을 보여줌. 하지만, 63.55% 가 성공하였고, 46%가 실패했다는 것은 고객 사용성에 있어 좋지 않기 때문에 Retry 설정과 동적 Scale out (replica의 자동적 추가,HPA) 을 통하여 시스템을 확장 해주는 후속처리가 필요.
-
-- Retry 의 설정 (istio)
-- Availability 가 높아진 것을 확인 (siege)
-
-### 오토스케일 아웃
+## 오토스케일 아웃
 앞서 CB 는 시스템을 안정되게 운영할 수 있게 해줬지만 사용자의 요청을 100% 받아들여주지 못했기 때문에 이에 대한 보완책으로 자동화된 확장 기능을 적용하고자 한다. 
 
 
@@ -495,7 +460,7 @@ Shortest transaction:           0.09
 :
 ```
 
-### Liveness
+## Liveness
 - Liveness 설정:
 ```
 livenessProbe:
