@@ -281,7 +281,7 @@ public interface DeliveryService {
     public void deliveryStart(@RequestBody Delivery delivery);
 
 }
-- 배송 시작 후(@PostPersist) 정상적인 서비스일 경우 pub/sub 방식으로 완료 회신
+- 배송 시작 후(@PostPersist) 정상적인 서비스일 경우 pub/sub 방식으로 receipt Stat 변경
 
 # Delivery.java (Entity)
     @PostPersist
@@ -300,18 +300,16 @@ public interface DeliveryService {
 ```
 # 배송 (delivery) 서비스를 잠시 내려놓음 (ctrl+c)
 #배송 요청
-http PATCH http://localhost:8088/receipts/1 stat=DELIVERYREQUESTED   #Fail
-http PATCH http://localhost:8088/receipts/2 stat=DELIVERYREQUESTED   #Fail
-#payment 재기동
+curl http://localhost:8081/receipts/4 -H "Content-type:application/json" -X PATCH -d "{\"stat\":\"DELIVERYREQUESTED\"}"   #Fail
+#delivery 재기동
 cd delivery
 mvn spring-boot:run
 #주문처리
-http PATCH http://localhost:8088/receipts/1 stat=DELIVERYREQUESTED   #Success
-http PATCH http://localhost:8088/receipts/1 stat=DELIVERYREQUESTED   #Success
+curl http://localhost:8081/receipts/4 -H "Content-type:application/json" -X PATCH -d "{\"stat\":\"DELIVERYREQUESTED\"}"   #Success
 ```
 ## 비동기식 호출 / 장애격리 / 최종 (Eventual) 일관성 테스트
-배송 프로세스에 문제가 있더라도 접수는 계속 받을 수 있도록 비동기식 호출하여 처리 한다. (kafka)
-추후에 배송 프로세스가 복구 완료되면 접수에서 정상적으로 배송 시작 되었다고 이벤트를 수신한다. (Polish Hanler 처리 및 kafka로 접수에 배송 요청 상태 변경 회신)
+수리 프로세스에 문제가 있더라도 접수는 계속 받을 수 있도록 비동기식 호출하여 처리 한다. (kafka)
+추후에 수리 프로세스가 복구 완료되면 접수에서 정상적으로 수리 접수 되었다고 이벤트를 수신한다. (Polish Hanler 처리 및 kafka로 접수에 배송 요청 상태 변경 회신)
 ```
 <receipt.java>
 @PostPersist
@@ -386,14 +384,6 @@ http GET http://localhost:8088/repairs      # 수리 정보 생성
 
 # 운영
 
-## CI/CD 설정
-
-각 구현체들은 각자의 source repository 에 구성되었고, 사용한 CI/CD 플랫폼은 azure를 사용하였으며 CI/CD는 아래와 같습니다.
-
-![image](https://user-images.githubusercontent.com/46660236/98197484-3ae4ce00-1f6a-11eb-9085-10c4ce540ac1.png)
-
-![image](https://user-images.githubusercontent.com/46660236/98197489-3cae9180-1f6a-11eb-9793-7d9099238007.png)
-
 
 ## 동기식 호출 / 서킷 브레이킹 / 장애격리
 * 서킷 브레이킹 프레임워크의 선택: Istio Destination rule
@@ -434,84 +424,23 @@ spec:
 
 - 결제서비스에 대한 replica 를 동적으로 늘려주도록 HPA 를 설정한다. 설정은 CPU 사용량이 90프로를 넘어서면 replica 를 10개까지 늘려준다:
 ```
-kubectl autoscale deploy payment --min=1 --max=10 --cpu-percent=90
+kubectl autoscale deploy delivery --min=1 --max=10 --cpu-percent=90
 ```
 - CB 에서 했던 방식대로 워크로드를 2분 동안 걸어준다.
 ```
-siege -c100 -t120S -r10 'http://20.196.136.26:8080/payments GET
+siege -c100 -t120S -r10 'http://40.82.137.107:8080/deliveries GET
 ```
 - 오토스케일이 어떻게 되고 있는지 모니터링을 걸어둔다:
 ```
-kubectl get deploy pay -w
+kubectl get deploy delivery -w
 ```
 - 어느정도 시간이 흐른 후 스케일 아웃이 벌어지는 것을 확인할 수 있다:
 ```
-NAME      READY   UP-TO-DATE   AVAILABLE   AGE
-payment   1/1     1            1           45h
-payment   1/2     1            1           45h
-payment   1/2     1            1           45h
-payment   1/2     1            1           45h
-payment   1/2     2            1           45h
+NAME       READY   UP-TO-DATE   AVAILABLE   AGE
+delivery   1/1     1            1           45h
+delivery   1/2     1            1           45h
+delivery   1/2     1            1           45h
+delivery   1/2     1            1           45h
+delivery   1/2     2            1           45h
 :
 ```
-
-## 무정지 재배포
-
-* 먼저 무정지 재배포가 100% 되는 것인지 확인하기 위해서 Autoscaler 이나 CB 설정을 제거함
-
-- seige 로 배포작업 직전에 워크로드를 모니터링 함.
-```
-siege -c100 -t120S -r10 --content-type "application/json" 'http://localhost:8081/orders POST {"item": "chicken"}'
-
-** SIEGE 4.0.5
-** Preparing 100 concurrent users for battle.
-The server is now under siege...
-
-HTTP/1.1 201     0.68 secs:     207 bytes ==> POST http://localhost:8081/orders
-HTTP/1.1 201     0.68 secs:     207 bytes ==> POST http://localhost:8081/orders
-HTTP/1.1 201     0.70 secs:     207 bytes ==> POST http://localhost:8081/orders
-HTTP/1.1 201     0.70 secs:     207 bytes ==> POST http://localhost:8081/orders
-:
-
-```
-
-- 새버전으로의 배포 시작
-```
-kubectl set image ...
-```
-
-- seige 의 화면으로 넘어가서 Availability 가 100% 미만으로 떨어졌는지 확인
-```
-Transactions:		        3078 hits
-Availability:		       70.45 %
-Elapsed time:		       120 secs
-Data transferred:	        0.34 MB
-Response time:		        5.60 secs
-Transaction rate:	       17.15 trans/sec
-Throughput:		        0.01 MB/sec
-Concurrency:		       96.02
-
-```
-배포기간중 Availability 가 평소 100%에서 70% 대로 떨어지는 것을 확인. 원인은 쿠버네티스가 성급하게 새로 올려진 서비스를 READY 상태로 인식하여 서비스 유입을 진행한 것이기 때문. 이를 막기위해 Readiness Probe 를 설정함:
-
-```
-# deployment.yaml 의 readiness probe 의 설정:
-
-
-kubectl apply -f kubernetes/deployment.yaml
-```
-
-- 동일한 시나리오로 재배포 한 후 Availability 확인:
-```
-Transactions:		        3078 hits
-Availability:		       100 %
-Elapsed time:		       120 secs
-Data transferred:	        0.34 MB
-Response time:		        5.60 secs
-Transaction rate:	       17.15 trans/sec
-Throughput:		        0.01 MB/sec
-Concurrency:		       96.02
-
-```
-
-배포기간 동안 Availability 가 변화없기 때문에 무정지 재배포가 성공한 것으로 확인됨.
