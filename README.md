@@ -44,7 +44,7 @@
 # 분석/설계
 
 ## Event Storming 결과
-* MSAEz 로 모델링한 이벤트스토밍 결과:  http://www.msaez.io/#/storming/JCfIVLVOzfPg7DfOPWjEfNsoMa92/share/b3974b4a87da79a7e8333e2729bfe356/-MK7sQ_71ifl_gedWf2O
+* MSAEz 로 모델링한 이벤트스토밍 결과:  http://www.msaez.io/#/storming/n3taAaAWRZfsi0zRvKkRC4JRKAz1/mine/9b369712b03dfd02499b960c41add2c5/-MLLqWOYSX159CuLRqpu
 
 ### 이벤트 도출
 ![image](https://user-images.githubusercontent.com/22365716/98182203-8a1a0700-1f48-11eb-964e-636005c3aa9c.png)
@@ -105,6 +105,7 @@
 
     - 트랜잭션 처리
         - 수리 완료시 결제처리에 대해서는 Request-Response 방식 처리
+        - 결제 완료시 배송에 대해서는 Request-Response 방식 처리
     - 성능
         - 접수처, 수리처, 결제 뷰 생성
 
@@ -129,84 +130,110 @@ cd payment
 mvn spring-boot:run
 cd display
 mvn spring-boot:run
-cd car-react
-npm start
+cd delivery
+mvn spring-boot:run
 ```
 ## DDD 의 적용
-- 각 서비스내에 도출된 핵심 Aggregate Root 객체를 Entity 로 선언하였다: (예시는 pay 마이크로 서비스). 이때 가능한 현업에서 사용하는 언어 (유비쿼터스 랭귀지)를 그대로 사용하려고 노력했다. 하지만, 일부 구현에 있어서 영문이 아닌 경우는 실행이 불가능한 경우가 있기 때문에 계속 사용할 방법은 아닌것 같다. (Maven pom.xml, Kafka의 topic id, FeignClient 의 서비스 id 등은 한글로 식별자를 사용하는 경우 오류가 발생하는 것을 확인하였다)
+- 각 서비스내에 도출된 핵심 Aggregate Root 객체를 Entity 로 선언하였다: (예시는 pay 마이크로 서비스). 이때 가능한 현업에서 사용하는 언어 (유비쿼터스 랭귀지)를 그대로 사용하려고 노력했다.
 ```
-package automechanicsmall;
+package automechanicsmallkde;
+
 import javax.persistence.*;
 import org.springframework.beans.BeanUtils;
 import java.util.List;
+
 @Entity
-@Table(name="Repair")
-public class Repair {
+@Table(name="Delivery")
+public class Delivery {
+
     @Id
     @GeneratedValue(strategy=GenerationType.AUTO)
     private Long id;
-    private String vehiNo;
     private String stat;
-    private Integer repairAmt;
     private Long receiptId;
-public Long getId() {
+    private String vehiNo;
+
+    @PrePersist
+    public void onPrePersist(){
+        try {
+            Thread.currentThread().sleep((long) (800 + Math.random() * 220));
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+
+    @PostPersist
+    public void onPostPersist(){
+        System.out.println("###delivery.java - PrePersist###");
+        System.out.println(this.getReceiptId());
+        DeliveryStarted deliveryStarted = new DeliveryStarted();
+        BeanUtils.copyProperties(this, deliveryStarted);
+        //paymentApproved.setPayAmt(this.getPayAmt());
+        //paymentApproved.setReceiptId(this.getReceiptId());
+
+        deliveryStarted.publishAfterCommit();
+    }
+
+
+    public Long getId() {
         return id;
     }
+
     public void setId(Long id) {
         this.id = id;
     }
-    public String getVehiNo() {
-        return vehiNo;
-    }
-    public void setVehiNo(String vehiNo) {
-        this.vehiNo = vehiNo;
-    }
+
     public String getStat() {
         return stat;
     }
+
     public void setStat(String stat) {
         this.stat = stat;
     }
-    public Integer getRepairAmt() {
-        return repairAmt;
-    }
-    public void setRepairAmt(Integer repairAmt) {
-        this.repairAmt = repairAmt;
-    }
+
     public Long getReceiptId() {
         return receiptId;
     }
+
     public void setReceiptId(Long receiptId) {
         this.receiptId = receiptId;
     }
+
+    public String getVehiNo() {
+        return vehiNo;
+    }
+
+    public void setVehiNo(String vehiNo) {
+        this.vehiNo = vehiNo;
+    }
+
 }
 ```
 - Entity Pattern 과 Repository Pattern 을 적용하여 JPA 를 통하여 다양한 데이터소스 유형 (RDB or NoSQL) 에 대한 별도의 처리가 없도록 데이터 접근 어댑터를 자동 생성하기 위하여 Spring Data REST 의 RestRepository 를 적용하였다
 ```
-package automechanicsmall;
+package automechanicsmallkde;
+
 import org.springframework.data.repository.PagingAndSortingRepository;
-import java.util.List;
-public interface RepairRepository extends PagingAndSortingRepository<Repair, Long>{
+
+public interface DeliveryRepository extends PagingAndSortingRepository<Delivery, Long>{
+
 }
 ```
 - 적용 후 REST API 의 테스트
 ```
 # 접수 생성 & 수리 요청
-http POST http://localhost:8088/receipts vehiNo=12가1234 stat=REQUESTREPAIR
-# 수리 완료
-http POST http://localhost:8088/receipts vehiNo=12가1234 stat=REQUESTREPAIR
-# 비용 지불
-http PATCH http://localhost:8088/receipts/1 stat=PAYMENTREQUESTED payAmt=3000
-# 각 어그리게이트 확인 (접수, 수리, 비용지불)
+curl http://localhost:8081/receipts -H "Content-type:application/json" -X POST -d "{\"vehiNo\":\"0101\", \"stat\":\"REPAIRREQUEST\"}"
+# 배송 요청
+curl http://localhost:8081/receipts/1 -H "Content-type:application/json" -X PATCH -d "{\"stat\":\"DELIVERYREQUESTED\"}"
+# 각 어그리게이트 확인 (접수, 배송 시작)
 http http://localhost:8088/receipts/1
-http http://localhost:8088/repairs/1
-http http://localhost:8088/payments/1
+http http://localhost:8088/deliveries/1
 ```
 ## 폴리글랏 퍼시스턴스
-마이크로서비스의 폴리그랏 퍼시스턴스의 예로 데이터의 빈번한 입출력을 사용하는 부분은 Display(View)의 저장소는 Mongo DB(NO SQL)를 사용하고 그 외의 업무 도메인인 접수(Receipt), 수리(Repair), 결재(Payment)는 Maria DB(RDB)를 사용하였다.
+마이크로서비스의 폴리그랏 퍼시스턴스의 예로 데이터의 빈번한 입출력을 사용하는 부분은 Display(View)의 저장소는 Mongo DB(NO SQL)를 사용하고 그 외의 업무 도메인인 접수(Receipt), 수리(Repair), 결재(Payment), 배송(Delivery)는 Maria DB(RDB)를 사용하였다.
 application.yml의 간단한 설정을 통해 설정이 가능하다.
 ```
-application.xml (receipt service)
+application.xml (delivery service)
 spring:
   profiles: default
   jpa:
@@ -218,9 +245,9 @@ spring:
         show_sql: true
         format_sql: true
   datasource:
-    url: jdbc:mariadb://${payment.db.url}:3306/receipt?useSSL=true
-    username: ${payment.db.name}
-    password: ${payment.db.password}
+    url: jdbc:mariadb://${delivery.db.url}:3306/delivery?useSSL=true
+    username: ${delivery.db.name}
+    password: ${delivery.db.password}
     driverClassName: org.mariadb.jdbc.Driver
 application.xml (display service)
 spring:
@@ -237,48 +264,58 @@ spring:
         format_sql: true
 ```
 ## 동기식 호출 과 Fallback 처리
-분석단계에서의 조건 중 하나로 접수(repair)->결제(payment) 간의 호출은 동기식 일관성을 유지하는 트랜잭션으로 처리하기로 하였다. 호출 프로토콜은 이미 앞서 Rest Repository 에 의해 노출되어있는 REST 서비스를 FeignClient 를 이용하여 호출하도록 한다.
-- 결제서비스를 호출하기 위하여 Stub과 (FeignClient) 를 이용하여 Service 대행 인터페이스 (Proxy) 를 구현
+분석단계에서의 조건 중 하나로 결제(payment)->배송(delivery) 간의 호출은 동기식 일관성을 유지하는 트랜잭션으로 처리하기로 하였다. 호출 프로토콜은 이미 앞서 Rest Repository 에 의해 노출되어있는 REST 서비스를 FeignClient 를 이용하여 호출하도록 한다.
+- 배송서비스를 호출하기 위하여 Stub과 (FeignClient) 를 이용하여 Service 대행 인터페이스 (Proxy) 를 구현
 ```
-# (receipt) PaymentService.java
+# (delivery) DeliveryService.java
 package automechanicsmall.external;
-import org.springframework.cloud.openfeign.FeignClient;
-import org.springframework.web.bind.annotation.*;
-import java.util.Date;
-@FeignClient(name="payment", url="${api.payment.url}")
-public interface PaymentService {
-    @RequestMapping(method= RequestMethod.POST, path="/payments")
-    void pay(@RequestBody Payment payment);
-}
-- 결재 요청을 받은 직후(@PostPersist) 정상적인 서비스일 경우 pub/sub 방식으로 완료 회신
 
-# Payment.java (Entity)
+import automechanicsmall.external.Delivery;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
+
+import java.util.Date;
+
+@FeignClient(name="delivery", url="${api.delivery.url}")
+public interface DeliveryService {
+
+    @RequestMapping(method= RequestMethod.POST, path="/deliveries")
+    public void deliveryStart(@RequestBody Delivery delivery);
+
+}
+- 배송 시작 후(@PostPersist) 정상적인 서비스일 경우 pub/sub 방식으로 완료 회신
+
+# Delivery.java (Entity)
     @PostPersist
     public void onPostPersist(){
-        System.out.println("###payment.java - PrePersist###");
+        System.out.println("###delivery.java - PrePersist###");
         System.out.println(this.getReceiptId());
-        PaymentApproved paymentApproved = new PaymentApproved();
-        BeanUtils.copyProperties(this, paymentApproved);
-        paymentApproved.publishAfterCommit();
+        DeliveryStarted deliveryStarted = new DeliveryStarted();
+        BeanUtils.copyProperties(this, deliveryStarted);
+        //paymentApproved.setPayAmt(this.getPayAmt());
+        //paymentApproved.setReceiptId(this.getReceiptId());
+
+        deliveryStarted.publishAfterCommit();
     }
 ```
-- 동기식 호출에서는 호출 시간에 따른 타임 커플링이 발생하며, 결제 시스템이 장애가 나면 결재요청을 못받는다는 것을 확인:
+- 동기식 호출에서는 호출 시간에 따른 타임 커플링이 발생하며, 배송 시스템이 장애가 나면 배송요청을 못받는다는 것을 확인:
 ```
-# 결제 (pay) 서비스를 잠시 내려놓음 (ctrl+c)
-#지불 요청
-http PATCH http://localhost:8088/receipts/1 stat=PAYMENTREQUESTED   #Fail
-http PATCH http://localhost:8088/receipts/2 stat=PAYMENTREQUESTED   #Fail
+# 배송 (delivery) 서비스를 잠시 내려놓음 (ctrl+c)
+#배송 요청
+http PATCH http://localhost:8088/receipts/1 stat=DELIVERYREQUESTED   #Fail
+http PATCH http://localhost:8088/receipts/2 stat=DELIVERYREQUESTED   #Fail
 #payment 재기동
-cd payment
+cd delivery
 mvn spring-boot:run
 #주문처리
-http PATCH http://localhost:8088/receipts/1 stat=PAYMENTREQUESTED   #Success
-http PATCH http://localhost:8088/receipts/1 stat=PAYMENTREQUESTED   #Success
+http PATCH http://localhost:8088/receipts/1 stat=DELIVERYREQUESTED   #Success
+http PATCH http://localhost:8088/receipts/1 stat=DELIVERYREQUESTED   #Success
 ```
-- 또한 과도한 요청시에 서비스 장애가 도미노 처럼 벌어질 수 있다. (서킷브레이커, 폴백 처리는 운영단계에서 설명한다.)
 ## 비동기식 호출 / 장애격리 / 최종 (Eventual) 일관성 테스트
-수리 프로세스에 문제가 있더라도 접수는 계속 받을 수 있도록 비동기식 호출하여 처리 한다. (kafka)
-추후에 수리 프로세스가 복구 완료되면 접수에서 정상적으로 수리 요청 되었다고 이벤트를 수신한다. (Polish Hanler 처리 및 kafka로 접수에 수리 요청 상태 변경 회신)
+배송 프로세스에 문제가 있더라도 접수는 계속 받을 수 있도록 비동기식 호출하여 처리 한다. (kafka)
+추후에 배송 프로세스가 복구 완료되면 접수에서 정상적으로 배송 시작 되었다고 이벤트를 수신한다. (Polish Hanler 처리 및 kafka로 접수에 배송 요청 상태 변경 회신)
 ```
 <receipt.java>
 @PostPersist
@@ -334,7 +371,7 @@ public void onPostPersist(){
     }
 }
 ```
-수리 시스템은 접수/결제와 완전히 분리되어있으며, 이벤트 수신에 따라 처리되기 때문에, 수리시스템이 유지보수로 인해 잠시 내려간 상태라도 주문을 받는데 문제가 없다:
+ 시스템은 접수/결제와 완전히 분리되어있으며, 이벤트 수신에 따라 처리되기 때문에, 수리시스템이 유지보수로 인해 잠시 내려간 상태라도 주문을 받는데 문제가 없다:
 ```
 # 수리 서비스 (store) 를 잠시 내려놓음 (ctrl+c)
 #처리
