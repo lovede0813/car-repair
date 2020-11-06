@@ -95,24 +95,20 @@
 
 ### 모델 수정
 
-![image](https://user-images.githubusercontent.com/22365716/98186925-2ea14680-1f53-11eb-9ef5-4a5bbb3aabfc.png)
+![모델수정](https://user-images.githubusercontent.com/46660236/98321246-f0298b80-2027-11eb-919f-b1ad830dbe6c.PNG)
     
     - 수정된 모델은 모든 요구사항을 커버함.
 
 ### 비기능 요구사항에 대한 검증
 
-![image](https://user-images.githubusercontent.com/22365716/98186925-2ea14680-1f53-11eb-9ef5-4a5bbb3aabfc.png)
+![모델수정](https://user-images.githubusercontent.com/46660236/98321246-f0298b80-2027-11eb-919f-b1ad830dbe6c.PNG)
 
     - 트랜잭션 처리
-        - 수리 완료시 결제처리에 대해서는 Request-Response 방식 처리
         - 결제 완료시 배송에 대해서는 Request-Response 방식 처리
-    - 성능
-        - 접수처, 수리처, 결제 뷰 생성
-
 
 ## 헥사고날 아키텍처 다이어그램 도출
     
-![image](https://user-images.githubusercontent.com/22365716/98185109-54c4e780-1f4f-11eb-9544-7ea07a1365ad.png)
+![헥사고날](https://user-images.githubusercontent.com/46660236/98321195-c8d2be80-2027-11eb-8c71-20abffd8c466.png)
 
     - Chris Richardson, MSA Patterns 참고하여 Inbound adaptor와 Outbound adaptor를 구분함
     - 호출관계에서 PubSub 과 Req/Resp 를 구분함
